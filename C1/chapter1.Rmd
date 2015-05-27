@@ -93,4 +93,74 @@ The sub-object rotation stores the variable loadings
 head(pcaObject$rotation[, 1:3])
 ```
 
-got to page 54 - spatialSign()
+For spatial sign transforms REMEMBER to center and scale first. Spatial sign for models which are sensitive to outliers
+
+```{r}
+#spatObject <- spatialSign(segData)
+```
+
+The segData does not have any missing values, but for data with these can use impute package with knn imputation impute.knn()
+
+The preProcess() function in caret is handy to apply all the preprocessing
+
+```{r}
+trans <- preProcess(segData,
+                 method = c("BoxCox", "center", "scale", "pca"))
+trans
+
+#apply transformations
+tranformed <- predict(trans, segData)
+```
+The order of preprocessing is center, scale, inputation, feature extraction then spatial sign.
+
+### Filtering
+
+Use nearZeroVar() to find predictors with near zero variance
+
+```{r}
+nearZeroVar(segData)
+```
+
+For correlations use cor()
+
+```{r, message=FALSE}
+correlation <- cor(segData)
+correlation[1:4, 1:4]
+corrplot(correlation, order = "hclust")
+```
+
+To filter based on correlations, use findCorrelation()
+
+```{r}
+highCorr <- findCorrelation(correlation, cutoff = .75)
+filteredSegData <- segData[, -highCorr]
+```
+### Dummies
+
+Use dummies for tree based models- makes splits more interpretable!!
+
+```{r}
+library(caret)
+data(cars)
+#seems cars are already in dummy form
+#carSub <- select(cars, Price, Mileage, Type)
+#head(cars)
+#levels(carSub$Type)
+
+#simpleMod <- dummyVars(~Mileage + Type,
+#                       data = carSubset,
+#                       levelsOnly = TRUE)
+
+# makes Type a dummy now
+# USE predict() method on dataset in conjunction with dummyVars
+
+#predict(simpleMod, head(carSubset))
+
+#if you want an interaction term, use :
+
+#withInteraction <- dummyVars(~Mileage + Type + Mileage:Type,
+#                    data = carSubset, levelsOnly = TRUE)
+
+```
+
+
