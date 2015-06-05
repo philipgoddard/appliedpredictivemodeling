@@ -1,0 +1,222 @@
+---
+title: "Chapter 2 Computing Notes"
+output: html_document
+---
+
+## Data Splitting
+
+```{r, message = FALSE, echo = FALSE}
+library(AppliedPredictiveModeling); library(caret)
+data(twoClassData)
+```
+
+* load the data twoClassData from Applied Predictive Modeling. Two columns for predictiors and 208 sample
+
+```{r}
+str(predictors)
+str(classes)
+```
+
+* Base function sample() can sample, but caret's createDataPartition() can do straitfied sampling based on classes in training set
+
+```{r}
+set.seed(1)
+trainingRows <- createDataPartition(classes,
+                                p = 0.8,
+                                list = FALSE)
+
+trainPredictors <- predictors[trainingRows, ]
+trainClasses <- classes[trainingRows]
+testPredictors <- predictors[-trainingRows, ]
+testClasses <- classes[-trainingRows]
+```
+
+* Could also use maximum dissimilarity sampling, use caret maxdissim()
+
+
+## Resampling
+
+* createDataPartition can be used with argument times to generate multiple splits
+
+```{r}
+set.seed(1)
+repeatedSplits <- createDataPartition(trainClasses, 
+                                      p=0.8,
+                                      times = 3)
+str(repeatedSplits)
+```
+
+* caret package also has functions createResamples() for bootstrap, createFolds() for k-fold cross validation, and createMultiFolds() for repeated cross validation.
+
+* In practice, can use caret functions to automatically create resampled data sets, fit models and evaluate performance
+
+## Basic Model Building in R
+
+* Aim: to fit a 5-nearest neighbour classification model to the data. There are multiple functions that could be used, we will use knn3() function in caret
+
+* R ises formula interface and the non-formula (matrix) interface for fitting models. NOTE that not all R functions have both interfaces
+
+```{r}
+#modelFunction(price ~ numBed + numBath + acres,
+#              data = housingData)
+
+#modelFunction(x = housePredictors, y = price)
+```
+
+* The formula interface is handy as can directly manipulate inputs, eg log(acres). However, it does not efficiently store the  information, and can slow computations.
+
+* The matric interface specifices all the predicors in a matrix or data frajme, and the outcome as a vector object
+
+* Can directly fit the model (we will use train() function in a bit)
+
+```{r}
+trainPredictors <- as.matrix(trainPredictors)
+knnFit <- knn3( x = trainPredictors, y = trainClasses, k = 5)
+knnFit
+```
+
+* Now use the predict method
+
+```{r}
+testPredictions <- predict(knnFit, newdata= testPredictors, type = 'class')
+str(testPredictions)
+```
+
+The value of the type argument varies accross different modeling functions.
+
+## Determining Tuning Parameters
+
+* focus here on the train() function
+
+* For this example, will use SVM like a black box. We want to tune the cost parameter
+
+```{r}
+library(caret)
+```
+
+* Want to use all the predictors to determine the Class
+
+```{r}
+data(GermanCredit)
+GermanCredit <- GermanCredit[, -nearZeroVar(GermanCredit)]
+GermanCredit$CheckingAccountStatus.lt.0 <- NULL
+GermanCredit$SavingsAccountBonds.lt.100 <- NULL
+GermanCredit$EmploymentDuration.lt.1 <- NULL
+GermanCredit$EmploymentDuration.Unemployed <- NULL
+GermanCredit$Personal.Male.Married.Widowed <- NULL
+GermanCredit$Property.Unknown <- NULL
+GermanCredit$Housing.ForFree <- NULL
+
+## Split the data into training (80%) and test sets (20%)
+set.seed(100)
+inTrain <- createDataPartition(GermanCredit$Class, p = .8)[[1]]
+GermanCreditTrain <- GermanCredit[ inTrain, ]
+GermanCreditTest  <- GermanCredit[-inTrain, ]
+```
+```{r, eval=FALSE}
+##NEED TO MAKE THE TRAIN VALIDATION SPLIT
+set.seed(1056)
+svmFit <- train(Class ~ .,
+                data = GermanCreditTrain,
+                method = 'svmRadial')
+```
+
+* We would like to tailor the computations by overriding several defaults
+
+* First, want to preprocess
+
+```{r, eval=FALSE}
+set.seed(1056)
+svmFit <- train(Class ~ .,
+                data = GermanCreditTrain,
+                method = 'svmRadial',
+                preProc = c('center', 'scale'))
+```
+
+* Note we can do PCA here as well (and I think spatialSign as well)
+
+* The user can specify the cost values to investigate. With tuneLength = 10, the cost values 2^-2 to 2^7 are evaluated
+
+```{r, eval=FALSE}
+set.seed(1056)
+svmFit <- train(Class ~ .,
+                data = GermanCreditTrain, 
+                method = 'svmRadial',
+                preProc = c('center', 'scale'),
+                tuneLength = 10)
+```
+
+* By default, the basic bootstrap will be used to calculate performance measures. Repeated 10-fold cross-validation can be specified with the trainControl
+function.
+
+```{r, warning=FALSE}
+set.seed(1056)
+svmFit <- train(Class ~ .,
+                data = GermanCreditTrain,
+                method = 'svmRadial',
+                preProc = c('center', 'scale'),
+                tuneLength = 10,
+                trControl = trainControl(method = 'cv',
+                                         number = 10,
+                                         classProbs = TRUE))
+              
+svmFit
+```
+
+* Using the 'pick the best' approach, the most accurate model is chosen. selectFunction() allows to select model by best, oneSE or tolerance  
+
+```{r}
+plot(svmFit, scales = list(x = list(log = 2)))
+```
+
+* To predict new samples:
+
+```{r}
+predictedClasses <- predict(svmFit, newdata = GermanCreditTest)
+str(predictedClasses)
+```
+
+* Can get class probablilities using 'type' option
+
+```{r}
+predictedProbs <- predict(svmFit, newdata = GermanCreditTest,
+                            type = "prob")
+str(predictedProbs)
+```
+
+## Between-Model Comparisons
+
+* want to compare the svm model to a simple glm
+
+```{r}
+set.seed(1056)
+logisticReg <- train(Class ~ .,
+                     data = GermanCreditTrain,
+                     method = 'glm',
+                     trControl = trainControl(method = 'cv',
+                                              number = 10))
+
+logisticReg
+```
+
+To compare these two models based on cross-validation statistics, use the resamples() function. Since the random number seed was initialized prior to
+running the SVM and logistic models, paired accuracy measurements exist
+for each data set. First, we create a resamples object from the models:
+
+```{r}
+resamp <- resamples(list(SVM = svmFit, Logistic = logisticReg))
+summary(resamp)
+```
+
+* Evaluate the performance using diff()
+
+```{r}
+modelDifferences <- diff(resamp)
+summary(modelDifferences)
+```
+
+* The p-values for the model comparisons are large (0.84 for accuracy and
+0.22 for Kappa), which indicates that the models fail to show any difference
+in performance.
+
+* Investigate xyplot.resamples()
