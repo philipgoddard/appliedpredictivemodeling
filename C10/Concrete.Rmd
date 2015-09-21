@@ -1,0 +1,702 @@
+---
+title: "Concrete Case Study"
+output: html_document
+---
+
+Load up libraries and set up parallel processing
+
+```{r, message=FALSE}
+library("AppliedPredictiveModeling")
+library("Hmisc")
+library("caret")
+library("Cubist")
+library("plyr")
+library("dplyr")
+library("reshape2")
+library("doMC")
+trellis.par.set(caretTheme())
+registerDoMC(cores = 4)
+```
+
+Load the data up and have a look
+
+```{r}
+data(concrete)
+str(concrete)
+# mixtures has mixture proportions
+str(mixtures)
+```
+
+```{r}
+describe(mixtures)
+```
+
+```{r, cache=TRUE, fig.width=10}
+# need to play with eg transparent points for overplotting
+# how make smooth line different transparency?
+featurePlot(x = mixtures[, -9],
+            y = mixtures$CompressiveStrength,
+            # space between panels
+            between = list(x = 1, y = 1),
+            type = c("g", "p", "smooth"),
+            col.line = 'red',    
+            lwd = 3,
+            pch = 16,
+            alpha = 0.3,
+            col = 'black'
+            )
+```
+
+Below, we want to average replicated mixtures and train test split.
+
+```{r}
+averaged <- ddply(mixtures,
+                  .(Cement, BlastFurnaceSlag, FlyAsh, Water,
+                    Superplasticizer, CoarseAggregate,
+                    FineAggregate, Age),
+                  function(x) c(CompressiveStrength =
+                                  mean(x$CompressiveStrength)))
+
+# or alternatively use dplyr?
+averaged2 <- mixtures %>%
+  group_by(Cement, BlastFurnaceSlag, FlyAsh, Water,
+                    Superplasticizer, CoarseAggregate,
+                    FineAggregate, Age) %>%
+  summarise(CompressiveStrength = mean(CompressiveStrength))
+
+# train test split
+set.seed(975)
+forTrain <- createDataPartition(averaged$CompressiveStrength,
+                                p = 0.75,
+                                list = F)
+
+training <- averaged[forTrain, ]
+testing <- averaged[-forTrain, ]
+```
+
+Now think about what models we want to tune. For linear models, we want to include interaction terms up to second order. Defined own function interaction() to achieve this
+
+```{r, echo=FALSE}
+quadInteraction <- function(df){
+  numericCols <- vapply(df, is.numeric, logical(1)) 
+  dfNum <- df[, numericCols]
+  nCols <- ncol(df) + choose(ncol(dfNum), 2) + ncol(dfNum)
+  
+  out <- data.frame(matrix(NA, nrow = nrow(df), ncol = nCols))
+  out[1:ncol(df)] <- df
+  names(out)[1:ncol(df)] = names(df)
+  
+  start <- 1
+  dfPosition <- ncol(df) + 1
+  for( i in 1:ncol(dfNum) ) {
+    for( j in start:ncol(dfNum) ) {
+      out[dfPosition] <- dfNum[i] * dfNum[j]
+      names(out)[dfPosition] <- paste(names(dfNum[i]),
+                                      names(dfNum[j]),
+                                      sep = ' * ')
+      dfPosition <- dfPosition + 1
+    }
+    start <- start + 1 
+  }
+  
+  out
+}
+```
+
+```{r}
+# use custom function to get quadratic and two-factor interactions
+# remember outcome in in 9th column!
+interactionTrain <- quadInteraction(training[1:8])
+interactionTest <- quadInteraction(testing[1:8])
+
+interactionTrain$CompressiveStrength <- training$CompressiveStrength
+interactionTest$CompressiveStrength <- testing$CompressiveStrength
+
+```
+
+We chose to use repeated 10-fold cross validation:
+
+```{r}
+controlObject <- trainControl(method = "repeatedcv",
+                              repeats = 5,
+                              number = 10)
+```
+
+Start with linear models
+
+```{r, cache=T, warning=FALSE}
+set.seed(669)
+linearReg <- train(CompressiveStrength ~ .,
+                   data = interactionTrain,
+                   method = "lm",
+                   trControl = controlObject)
+linearReg
+```
+
+```{r,cache=TRUE, message=F, fig.width=10}
+set.seed(669)
+plsModel <- train(CompressiveStrength ~ .,
+                  data = interactionTrain,
+                  method = "pls",
+                  preProc = c("center", "scale"),
+                  tuneLength = 15,
+                  trControl = controlObject)
+plsModel
+```
+
+```{r,fig.width=10,echo=FALSE}
+xyplot(RMSE ~ ncomp,
+       data = plsModel$results,
+       main = "PLS Tune",
+       ylim = c(6.5, 11.5),
+       # this inelegant 
+       lower = plsModel$results$RMSE - plsModel$results$RMSESD,
+       upper = plsModel$results$RMSE + plsModel$results$RMSESD,
+       panel = function (x, y, lower, upper, ...){
+         panel.xyplot(x, y, type = c('o', 'g'), ...)
+         panel.arrows(x0 = x, x1 = x, y0 = lower, y1 = upper, 
+                 length = 0.1, unit = "native", 
+                 angle = 90, code = 3, ...)
+         # could use panel.segments if do not want bars
+         # ggplot is a bit more straightforward for error bars
+   })
+
+# note would chose ncomp = 13 for final model
+# increasing to 19 may get slightly better RMSE, but
+# less parsimonious
+```
+
+```{r, cache=TRUE,fig.width=10}
+enetGrid <- expand.grid(lambda = c(0, 0.01, 0.1, 0.1),
+                        fraction = seq(0.05, 1, length = 20))
+set.seed(669)
+enetModel <- train(CompressiveStrength ~ .,
+                  data = interactionTrain,
+                  method = "enet",
+                  preProc = c("center", "scale"),
+                  tuneGrid = enetGrid,
+                  trControl = controlObject)
+```
+
+```{r,fig.width=10,echo=FALSE}
+xyplot(RMSE ~ fraction,
+       groups = lambda,
+       data = enetModel$results,
+       type = c('o', 'g'),
+       main = "ENet Tune",
+       auto.key = list(space="bottom",
+                       columns=3, 
+                       title="lambda",
+                       cex.title=1.1,
+                       lines=TRUE,
+                       points=FALSE))#,
+   #    lx = enetModel$results$RMSE - enetModel$results[[4]],
+  #     ux = enetModel$results$RMSE + enetModel$results[[4]],
+  #     panel = function (x, y, lx, ux, ...){
+   #      panel.xyplot(x, y, type = c('o', 'g'), ...)
+  #       panel.arrows(x0 = x, x1 = x, y0 = lx, y1 = ux, 
+   #              length = 0.1, unit = "native", 
+    #             angle = 90, code = 3, ...)
+   #})
+```
+
+Now we go to nonlinear models: MARS, neural nets and SVM's. Note that we no longer need to include data with interation terms, as the models are nonlinear
+
+```{r, cache=TRUE, message=FALSE}
+# For earth, no preprocessing needed.
+# tune over degree and nprune.
+# Note we assume degree = 1 as can get unstable
+# beyond this
+
+earthGrid <- expand.grid(degree = 1,
+                         nprune = 2:25)
+set.seed(669)
+earthModel <- train(CompressiveStrength ~ .,
+                    data = training,
+                    method = "earth",
+                    tuneGrid = earthGrid,
+                    trControl = controlObject)
+```
+
+```{r,fig.width=10,echo=FALSE}
+xyplot(RMSE ~ nprune,
+       data = earthModel$results,
+       type = c('o', 'g'),
+       main = "Earth Tune")
+```
+
+```{r, cache=TRUE, message=FALSE}
+# radial basis SVM. Need to center and scale for
+# preprocess
+# Tune over c (penalty?)
+
+svmRModel <- train(CompressiveStrength ~ .,
+                   data = training,
+                   method = "svmRadial",
+                   preProc = c("center", "scale"),
+                   tuneLength = 15,
+                   trControl = controlObject)
+```
+
+```{r, fig.width=10, echo=FALSE}
+xyplot(RMSE ~ log(C),
+       data = svmRModel$results,
+       type = c('o', 'g'),
+       main = "SVM R Tune")
+```
+
+```{r, cache=TRUE, message=FALSE}
+nnetGrid <- expand.grid(decay = c(0.001, 0.01, 0.1),
+                        size = seq(1, 27, by = 2),
+                        bag = FALSE)
+set.seed(669)
+nnetModel <- train(CompressiveStrength ~ .,
+                   data = training,
+                   method = "avNNet",
+                   preProc = c("center", "scale"),
+                   tuneGrid = nnetGrid,
+                   linout = T,
+                   trace = F,
+                   maxit = 1000,
+                   trControl = controlObject)
+```
+
+```{r, fig.width=10, echo=FALSE}
+xyplot(RMSE ~ size,
+       groups = decay,
+       data = nnetModel$results,
+       type = c('o', 'g'),
+       main = "NNet Tune",
+       auto.key = list(space="bottom",
+                       columns=3, 
+                       title="decay",
+                       cex.title=1.1,
+                       lines=TRUE,
+                       points=FALSE))
+```
+
+Now some tree based models:
+
+```{r, cache=TRUE, message=FALSE, warning=FALSE}
+# CART trees - tuning over complexity parameter
+set.seed(669)
+rpartModel <- train(CompressiveStrength ~ .,
+                    data = training,
+                    method = "rpart",
+                    tuneLength = 30,
+                    trControl = controlObject)
+
+```
+
+```{r, fig.width=10, echo=FALSE}
+xyplot(RMSE ~ cp,
+       data = rpartModel$results,
+       type = c('o', 'g'),
+       main = "RPart Tune")
+```
+
+```{r, cache=TRUE, message=FALSE}
+# conditional inference tree - tuning over min criterion for split
+set.seed(669)
+ctreeModel <- train(CompressiveStrength ~ .,
+                    data = training,
+                    method = "ctree",
+                    tuneLength = 10,
+                    trControl = controlObject)
+
+```
+
+```{r, fig.width=10, echo=FALSE}
+xyplot(RMSE ~ mincriterion,
+       data = ctreeModel$results,
+       type = c('o', 'g'),
+       main = "CTree Tune")
+```
+
+```{r, cache=TRUE, message=FALSE, eval=FALSE}
+# rule based tree
+# may get pissy using multicores
+detach("package:doMC", unload = T)
+set.seed(669)
+mtModel <- train(CompressiveStrength ~ .,
+                 data = training,
+                 method = "M5",
+                 trControl = controlObject)
+```
+
+Final set of complex models
+
+```{r}
+# reset multi core processing
+library("doMC")
+registerDoMC(cores = 4)
+
+```
+
+```{r, cache=TRUE, message=FALSE}
+# random forest
+# this is tuning over mtry
+# no need to preprocess!
+set.seed(669)
+rfModel <- train(CompressiveStrength ~ .,
+                 data = training,
+                 method = "rf",
+                 tuneLength = 7,
+                 ntrees = 1000,
+                 importance = TRUE,
+                 trControl = controlObject)
+```
+
+```{r, fig.width=10, echo=FALSE}
+xyplot(RMSE ~ mtry,
+       data = rfModel$results,
+       type = c('o', 'g'),
+       main = "RF Tune")
+```
+
+```{r, message=FALSE, cache=TRUE}
+# bagged trees
+set.seed(669)
+bagTreeModel <- train(CompressiveStrength ~ .,
+                      data = training,
+                      method = "treebag",
+                      trControl = controlObject)
+```
+
+```{r, fig.width=10, echo=FALSE}
+bagTreeModel
+
+```
+
+
+```{r, message=FALSE, cache=TRUE}
+# boosted trees
+gbmGrid <- expand.grid(interaction.depth = seq(1, 7, by = 2),
+                       n.trees = seq(100, 1000, by = 50),
+                       shrinkage = c(0.01, 0.1),
+                       n.minobsinnode = 10)
+
+set.seed(669)
+gbmModel <- train(CompressiveStrength ~ .,
+                  data = training,
+                  method = "gbm",
+                  tuneGrid = gbmGrid,
+                  verbose = FALSE,
+                  trControl = controlObject)
+
+```
+
+```{r, fig.width=10, echo=FALSE}
+xyplot(RMSE ~ n.trees | as.factor(paste('Shrinkage = ', shrinkage, sep = " ")),
+       groups = interaction.depth,
+       data = gbmModel$results,
+       type = c('o', 'g'),
+       main = "GBM Tune",
+       auto.key = list(space="bottom",
+                       columns=3, 
+                       title="depth",
+                       cex.title=1.1,
+                       lines=TRUE,
+                       points=FALSE))
+```
+
+```{r, cache=TRUE, message=FALSE}
+cubistGrid <- expand.grid(committees = c(1, 5, 10, 50, 75, 100),
+                          neighbors = c(0, 1, 3, 5, 7, 9))
+set.seed(669)
+cubistModel <- train(CompressiveStrength ~ .,
+                 data = training,
+                 method = "cubist",
+                 tuneGrid = cubistGrid,
+                 trControl = controlObject)
+```
+
+```{r, fig.width=10, echo=FALSE}
+xyplot(RMSE ~ committees,
+       groups = neighbors,
+       data = cubistModel$results,
+       type = c('o', 'g'),
+       main = "Cubist Tune",
+       auto.key = list(space="bottom",
+                       columns=3, 
+                       title="neighbors",
+                       cex.title=1.1,
+                       lines=TRUE,
+                       points=FALSE))
+```
+
+Ok, now we have models tuned. Lets look at resamples to get an idea of accuracy
+
+```{r, fig.width=10}
+allResamples <- resamples(list("Linear Reg" = linearReg,
+                               "PLS" = plsModel,
+                               "ENet" =  enetModel,
+                               "MARS" = earthModel,
+                               "SVM R" = svmRModel,
+                               "NNet" = nnetModel,
+                               "RPart" = rpartModel,
+                               "CTree" = ctreeModel,
+                               "RF" = rfModel,
+                               "Bag Tree" = bagTreeModel,
+                               "GBM" = gbmModel,
+                               "Cubist" = cubistModel))
+                               
+parallelplot(allResamples)
+parallelplot(allResamples, metric = "Rsquared")
+
+```
+
+## Predictions
+
+chose the 4 best models: cubist, gbm, random forest and neural net
+
+```{r, cache=TRUE}
+rfPredictions <- predict(rfModel, testing[, 1:8])
+gbmPredictions <- predict(gbmModel, testing[, 1:8])
+cubistPredictions <- predict(cubistModel, testing[, 1:8])
+nnetPredictions <- predict(nnetModel, testing[, 1:8])
+```
+
+```{r, fig.width=10}
+predictions <- data.frame(rf = rfPredictions,
+                          gbm = gbmPredictions,
+                          cubist = cubistPredictions,
+                          nnet = nnetPredictions,
+                          compressiveStrength = testing[, 9])
+
+lapply(predictions[, 1:4], postResample, obs = predictions$compressiveStrength)
+
+# just out of interest, crudely stack the models. Would be interesting
+# to try with weighted means, and weight differently in different quartiles
+# of predicted response? Eg we can see nnet is very poor above predicted = 60,
+# so give it less weight here
+combinedPred <- 0.25 * rowSums(predictions[1:4])
+postResample(combinedPred, obs = predictions$compressiveStrength)
+```
+
+```{r, fig.width=10, echo=FALSE}
+predMelt <- melt(predictions, id = 'compressiveStrength')
+
+mySettings <- list(
+  strip.background=list(col = 'white')
+)
+xyplot(compressiveStrength ~ value | variable,
+       data = predMelt,
+       panel = function(x, y, ...) {
+         panel.xyplot(x, y, ...)
+         panel.abline(1, 1, type = 'l', lty = 2)
+       },
+       xlab = 'Predicted',
+       ylab = 'Actual',
+       type = c('p', 'g'),
+       pch = 16,
+       alpha=0.3,
+       col = 'black',
+       par.settings = mySettings
+)
+```
+
+To predict optimal mixtures, we first use the 28-day data to generate a set of random starting points from the training set. Since distances between the formulations will be used as a measure of dissimilarity, the data are pre-processed to have the same mean and variance for each predictor. After this, a single random mixture is selected to initialize the maximum dissimilarity sampling process
+
+```{r}
+age28Data <- subset(training, Age == 28)
+# remove age and compressive strength, preprocess so
+# centered and scaled
+pp1 <- preProcess(age28Data[, -(8:9)], c("center", "scale"))
+scaledTrain <- predict(pp1, age28Data[1:7])
+
+set.seed(669)
+# sample one mixture (startMixture returns a row number,
+# starters is the start mixture)
+startMixture <- sample(1:nrow(age28Data), 1)
+starters <- scaledTrain[startMixture, 1:7]
+```
+
+Now use maximum dissimilarity sampling to select 14 more mixtures to get a diverse set of starting points for search algorithms:
+
+```{r}
+pool <- scaledTrain
+index <- maxDissim(starters, pool, 14)
+startPoints <- c(startMixture, index)
+starters <- age28Data[startPoints, 1:7]
+# we now have 15 starting points for optimisation search
+```
+
+Since all seven mixtures add to one, the search prcedure will conduct the search without one ingredient (water): this will be detemrined by the sum of the other six ingredient proportions. Without this, candidate mixtures would be selected that do not add to one
+
+```{r}
+startingValues <- starters[, names(starters) != 'Water']
+```
+
+Want to use optim() to maximise compressinve strength. A custom function is needed to translate a candidate mixture into a predictions. This function can find settings to minimize a function, so it will return the negative of the compressive strength.
+
+```{r}
+# takes 6 sample propertions in x (not water!)
+# and the model used for prediction
+modelPrediction <- function(x, model) {
+  # checks that proprtions are between 0 and 1
+  # checks that proprtion of water does not fall below 5%
+  
+  # check proportions in correct range
+  # length(x) -1 rather than hard code 6?
+  for(i in 1:6) {
+    if(x[i] < 0 | x[i] > 1) return(10^38)
+  }
+  
+  # determine water proportion
+  x <- c(x, 1 - sum(x))
+  
+  # check water range
+  if(x[7] < 0.05) return(10^38)
+  
+  # transpose then convert vector to data frame
+  #and fix age to 28 days
+  tmp <- as.data.frame(t(x))
+  names(tmp) <- c('Cement', 'BlastFurnaceSlag',
+                  'FlyAsh', 'Superplasticizer',
+                  'CoarseAggregate', 'FineAggregate',
+                  'Water')
+  tmp$Age <- 28
+  
+  # get the model prediction
+  # multiply by -1 as optim will return 
+  # minimum of function
+  predict(model, tmp) * -1
+}
+```
+
+First, use Cubist
+
+```{r, cache=TRUE}
+cubistResults <- startingValues
+cubistResults$Water <- NA
+cubistResults$Prediction <- NA
+
+for(i in 1: nrow(cubistResults)) {
+  results <- optim(unlist(cubistResults[i, 1:6]),
+                   modelPrediction,
+                   method = "Nelder-Mead",
+                   control = list(maxit=5000),
+                   model = cubistModel)
+  
+  cubistResults$Prediction[i] <- -results$value
+  cubistResults[i, 1:6] <- results$par
+}
+
+cubistResults$Water <- 1- apply(cubistResults[, 1:6], 1, sum)
+# top 3
+cubistResults <- cubistResults[order(-cubistResults$Prediction), ][1:3, ]
+cubistResults$Model <- "Cubist"
+
+cubistResults
+```
+
+Neural net:
+
+```{r, cache=TRUE}
+nnetResults <- startingValues
+nnetResults$Water <- NA
+nnetResults$Prediction <- NA
+
+for(i in 1: nrow(nnetResults)) {
+  results <- optim(unlist(nnetResults[i, 1:6]),
+                   modelPrediction,
+                   method = "Nelder-Mead",
+                   control = list(maxit=5000),
+                   model = nnetModel)
+  
+  nnetResults$Prediction[i] <- -results$value
+  nnetResults[i, 1:6] <- results$par
+}
+
+nnetResults$Water <- 1- apply(nnetResults[, 1:6], 1, sum)
+# top 3
+nnetResults <- nnetResults[order(-nnetResults$Prediction), ][1:3, ]
+nnetResults$Model <- "NNet"
+
+nnetResults
+```
+
+gbm:
+
+```{r, cache=TRUE}
+gbmResults <- startingValues
+gbmResults$Water <- NA
+gbmResults$Prediction <- NA
+
+for(i in 1: nrow(gbmResults)) {
+  results <- optim(unlist(gbmResults[i, 1:6]),
+                   modelPrediction,
+                   method = "Nelder-Mead",
+                   control = list(maxit=5000),
+                   model = gbmModel)
+  
+  gbmResults$Prediction[i] <- -results$value
+  gbmResults[i, 1:6] <- results$par
+}
+
+gbmResults$Water <- 1- apply(gbmResults[, 1:6], 1, sum)
+# top 3
+gbmResults <- gbmResults[order(-gbmResults$Prediction), ][1:3, ]
+gbmResults$Model <- "gbm"
+
+gbmResults
+```
+
+rf:
+
+```{r, cache=TRUE}
+rfResults <- startingValues
+rfResults$Water <- NA
+rfResults$Prediction <- NA
+
+for(i in 1: nrow(rfResults)) {
+  results <- optim(unlist(rfResults[i, 1:6]),
+                   modelPrediction,
+                   method = "Nelder-Mead",
+                   control = list(maxit=5000),
+                   model = rfModel)
+  
+  rfResults$Prediction[i] <- -results$value
+  rfResults[i, 1:6] <- results$par
+}
+
+rfResults$Water <- 1- apply(rfResults[, 1:6], 1, sum)
+# top 3
+rfResults <- rfResults[order(-rfResults$Prediction), ][1:3, ]
+rfResults$Model <- "rf"
+
+rfResults
+```
+
+Finally, lets make a nice PCA plot for the 28 day mixtures, and the predicted mixtures:
+
+```{r, fig.width=10, fig.height=10}
+# run PCA at 28 days
+pp2 <- preProcess(age28Data[, 1:7], "pca")
+# get the components for these mixtures
+pca1 <- predict(pp2, age28Data[, 1:7])
+pca1$Data <- "Training Set"
+# Label which data points were used to start the searches
+pca1$Data[startPoints] <- "Starting Values"
+
+# Project the new mixtures in the same way (make sure to re-order columns)
+pca3 <- predict(pp2, cubistResults[, names(age28Data[, 1:7])])
+pca3$Data <- "Cubist"
+pca4 <- predict(pp2, nnetResults[, names(age28Data[, 1:7])])
+pca4$Data <- "nnet"
+
+pcaData <- rbind(pca1, pca3, pca4)
+pcaData$Data <- factor(pcaData$Data,
+                       levels = c("Training Set", "Starting Values",
+                                  "Cubist", "nnet"))
+
+lim <- extendrange(pcaData[, 1:2])
+xyplot(PC2 ~ PC1,
+       data = pcaData,
+       groups = Data,
+       auto.key = list(columns = 2),
+       xlim = lim,
+       ylim = lim,
+       type = c("g", "p"))
+```

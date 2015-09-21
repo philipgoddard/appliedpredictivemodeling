@@ -1,0 +1,12 @@
+base
+AppliedPredictiveModeling
+lattice
+ggplot2
+caret
+MASS
+klaR
+pROC
+randomForest
+foreach
+iterators
+doMC

@@ -1,0 +1,16 @@
+base
+lattice
+ggplot2
+caret
+rpart
+AppliedPredictiveModeling
+foreach
+iterators
+doMC
+partykit
+RWeka
+randomForest
+survival
+gbm
+plyr
+Cubist

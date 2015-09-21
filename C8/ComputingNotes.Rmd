@@ -1,0 +1,196 @@
+---
+title: "Computing Notes"
+output: html_document
+---
+
+## Single Trees
+
+* can use rpart and party. rpart makes splits based on CART metodology uusing rpart() function, and party makes splits based on conditional inference framework using the ctree() function. both use the formula method:
+
+```{r, eval = FALSE, message = FALSE}
+rpartTree <- rpart(y ~ ., data = trainData)
+# or
+ctreeTree <- ctree(y ~ ., data = trainData)
+```
+
+* rpart function has several control parameters that can be accessed through rpart.control argument. Two that are commonly used in training and can be accesded through train() are the complexity param (cp) and the maximum node depth (maxdepth). To tune a CART tree over complexity parameter, the method optioon in the train function should be set to method = "rpart". To tune over max depth, the method should be set to method = "rpart2"
+
+```{r}
+library(caret); library(rpart); library(AppliedPredictiveModeling); data(solubility)
+library(doMC)
+registerDoMC(cores = 4)
+
+set.seed(100)
+rpartTune <- train(solTrainXtrans, solTrainY,
+                   method = "rpart2",
+                   tuneLength = 10,
+                   trControl = trainControl(method = "cv"))
+
+rpartTune
+```
+
+* likewise, the party package has several control parameters that can be accessed through ctree_control argument. Two of these parameters that are commonly trained over are mincriterion which defines the statistical criterion to continue splitting, and maxdepth which is the max depth of the tree. To tune a conditoinal inference tree over mincriterion use method = "ctree" in train(). To tune over a max depth, the method option must be set to method = "ctree2"
+
+The plot method in the party package can produce tree diagrams
+```{r, fig.width=10}
+library(partykit)
+# note must convert to a party object
+# work out how to rotate + tidy up
+plot(as.party(rpartTune$finalModel))
+```
+
+## Model trees
+
+* main implementation of model trees can be foud in the Weka suite, but the mdoel can be accesed in R using the RWeka package. Note that may not like doMC for parallel. M5P fits the model tree, whole M5Rules uses the rule based version
+
+```{r, eval=FALSE}
+m5tree <- (y ~ ., data = trainData)
+# or for rules
+m5rules <- M5Rules(y ~ ., data = trainData)
+```
+
+* In the examples in the chapter, the number of training set points required to create additional splits was raised from the the default of 4 to 10. To do this use control argument:
+
+```{r, eval=FALSE}
+m5tree <- M5P(y ~ .,
+              data = trainData,
+              control = Weka_control(M = 10)
+              )
+```
+
+* the control argument also has options for toggling the use of smoothing annd pruning. the plot function can be used on the output from M5P.
+
+```{r, cache=TRUE}
+# to tune, can use train function in caret. can chose method = "M5"
+# fro model trees and rule based versoin of the model, as well as the 
+# use of smoothing and pruning.
+library(RWeka)
+detach("package:doMC", unload = T)
+set.seed(100)
+m5Tune <- train(solTrainXtrans, solTrainY,
+                method = "M5",
+                trControl = trainControl(method = "cv"),
+                # Use an option from M5() to specify the minimum
+                # number of samples needed to further split the 
+                # data to be 10
+                control = Weka_control(M = 10))
+
+```
+
+```{r}
+plot(m5Tune)
+```
+
+* train with method = "M5Rules" evaluates only the rule-based version of the model
+
+## Bagged Trees
+
+The ipred package contains two functions for bagged trees: bagging uses the formula interface and ipredbagg has the non-formula interface
+
+```{r, eval=FALSE}
+baggedTree <- ipredbagg(solTrainY, solTrainXtrans)
+# or
+baggedTree <- bagging(y ~ ., data = trainData)
+```
+
+* The functin uses the rpart()function and details aboutthe type of tree can be specified by passing rpart.control to the control argument for bagging and ipredbagg. By default, the larges possible tree is created.
+
+* several other packages have functios for bagging. RWeka has a function called bagging(), and caret has a general framework for bagging many model types, including trees, called bag. Conditional inference trees can also be bagged using the cforest function in the party package if the argument mtry is equal to the number of predictors:
+
+```{r, cache=TRUE, eval=FALSE}
+# the mtry parameter should  be the numer of predictors
+bagCtrl <- cforest_control(mtry = ncol(trainData) -1))
+baggedTree <- cforest(y ~ ., data = trainData, control = bagCtrl)
+```
+
+## Random Forest
+
+* implementation is in the randomForest package
+
+```{r, message=FALSE, cache=TRUE}
+library("doMC")
+library("randomForest")
+registerDoMC(cores = 4)
+
+rfModel <- randomForest(solTrainXtrans, solTrainY)
+## or 
+# rfModel <- randomForest(y ~ ., data = trainData)
+rfModel
+```
+
+* the two main arguments are mtry for the number of predictors that are randomly samped as candidates for each split, and ntree for the number of bootstrapped samples. The default for mtry in regression is the number of predictors divided by 3. The number of trees hsould be large enough too create stable, reproduceable results. Although the default is 500, at least 1000 bootstrap samples should be used (and perhaps more depending on number of predictors and values of mtry). Another important option is importance; variable scores are not calculated by default
+
+```{r,cache=TRUE}
+# note typo in book- should be ntree not ntrees
+rfModel2 <- randomForest(solTrainXtrans, solTrainY,
+                        importance = TRUE,
+                        ntree = 1000)
+
+rfModel2
+```
+
+* For forests built using conditional inference trees, the cforest function in the party package is avauilable. It has similar options, but the controls argument allows users to pick the type of splitting alorithm to use (eg biased or unbiased). CANNOT DO RF WITH MISSING DATA!!
+
+* the train function contains wrappers for either of these models by specifying eother method = "rf" or method = "cforest". Optimising mtry may result in a slight increase in performance. Also train can use standard resampling methods for estimating perfomance (as opposed to out of bag estimate)
+
+* for randomForest moels, the variable importance scores can be accessed using a function called importance(). For cforest objects, the analagous function in the party package is varimp().
+
+* each pacage tends to have its own function for calcualting importance scores. the caret functon varImp is a unifying function that is a wrapper for variable importance functions.
+
+## Boosted Trees
+
+* The most widely used package for boosting regression trees via stochastic gradient boosting is gbm. Models can be built in two distinct ways
+
+```{r, eval=FALSE}
+gbmModel <- gbm.fit(solTrainXtrans, solTrainY, distribution = "gaussian")
+# or
+gbmModel <- gbm(y ~ ., data = trainData, distribution = "gaussian")
+```
+
+* The distribution argument specifies the type of loss function athat will be optimised during boosting. For continuous response, distribution should be set to gaussian. The numer of trees (n.trees), depth of trees (interaction.depth), shrinkage (shrinkage) and prooprtion of observaipns to be samples (bag.fraction) can all be directly set in the call to gbm.
+
+* Like other parameters, the train function can be used to tune over these parameters
+
+```{r, cache=TRUE}
+library("gbm")
+
+gbmGrid <- expand.grid(interaction.depth = seq(1, 7, by = 2),
+                       n.trees = seq(500, 1000, by = 100),
+                       shrinkage = c(0.01, 0.1),
+                       n.minobsinnode = 10)
+set.seed(100)
+
+gbmTune <- train(solTrainXtrans, solTrainY,
+                 method = "gbm",
+                 tuneGrid = gbmGrid,
+                 verbose = FALSE)
+
+gbmTune
+```
+
+## Cubist
+* The function is in the Cubist package. Does not have a formula interface as it is desireable to let the code manage the creation and usage of dummy variables. To create a simple, rule based modl with a single committe and no instance based adjustment, we can use the simple code
+
+```{r}
+library("Cubist")
+cubistMod <- cubist(solTrainXtrans, solTrainY)
+```
+
+* an argument, committees, fits multiple models. Te familiar pedict method would be used for new samples:
+
+```{r}
+head(predict(cubistMod, solTestXtrans), 10)
+```
+
+* The choice of instance-based corrections does not beed to be made until samples are predicted. The predict function has an argument, neighbors, that can take on a single integer value (between 0 and 9) to adjust rule based predictions for the training set.
+
+* Once the model is trained, the summary function generates the exact rules that were used, as well as the final smoothed linear model for each rule. Also, as with most other models, the train function in the caret package can tune the model over values of committes and neighbors through resampling:
+
+```{r, cache=TRUE}
+cubistTuned <- train(solTrainXtrans, solTrainY, method = "cubist")
+
+cubistTuned
+
+plot(varImp(cubistTuned), top = 20)
+```
+

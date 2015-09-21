@@ -1,0 +1,178 @@
+---
+title: "Chapter 7 Notes"
+output: html_document
+---
+
+```{r, echo=FALSE, message=FALSE}
+library(caret); library(earth); library(kernlab)
+library(nnet); library(AppliedPredictiveModeling); data(solubility)
+```
+
+## Neural Networks
+
+* nnet() function can be used for regression. basic nnet() just used one hidden layer, weight decay and has symple syntax. RSNNS package supports wider array of neural nets
+
+* Note that nnets are particularly sensitive to high correlations, so PCA can be of use 
+
+```{r, eval=FALSE}
+# nnet syntax:
+# (assuming that the data in predictors have been standardized to same scale)
+nnetFit <- nnet(predictors, outcome, 
+                # number of hidden units
+                size = 5,
+                # weight decay to penalize large corfficients
+                decay = 0.01,
+                # linear output units
+                linout = TRUE,
+                # reduce printed output
+                trace = FALSE,
+                # Expand the number of iterations
+                # to find parameter estimates
+                maxit = 500,
+                # number of parameters used by the model
+                MaxNWts = 5 * (ncol(predictors) + 1) + 5 + 1)
+
+# to use model averaging, avNNet() function in caret can be used
+nnetAvg <- avNNet(predictors, outcome, 
+                # number of hidden units
+                size = 5,
+                # weight decay to penalize large corfficients
+                decay = 0.01,
+                # linear output units
+                linout = TRUE,
+                # reduce printed output
+                trace = FALSE,
+                # Expand the number of iterations
+                # to find parameter estimates
+                maxit = 500,
+                # number of parameters used by the model
+                MaxNWts = 5 * (ncol(predictors) + 1) + 5 + 1)
+
+# then use 
+predict(nnetFit, newData)
+# or
+predict(nnetAvg, newData)
+```
+
+* to tune a model to optimise parameters, the train function can be applied. First, make sure remove correlated predictors as neural nets are particularly sensitive to these:
+
+```{r, cache = TRUE}
+# remove high pairwise correlations
+tooHigh <- findCorrelation(cor(solTrainXtrans), cutoff = 0.75)
+trainXnnet <- solTrainXtrans[, -tooHigh]
+testXnnet <- solTestXtrans[, -tooHigh]
+
+# create a grid for specific models to test
+nnetGrid <- expand.grid(.decay = c(0, 0.01, 0.1),
+                        .size = c(1:10),
+                        # no bootstrap aggregation for now
+                        .bag = FALSE)
+
+ctrl <- trainControl("cv", number = 10)
+
+# do not specifiy size???
+set.seed(100)
+nnetTune <- train(solTrainXtrans, solTrainY,
+                  method = "avNNet",
+                  trControl = ctrl,
+                  preProc = c("center", "scale"),
+                  linout = T,
+                  trace = F,
+                  MaxNWts = 10 * (ncol(trainXnnet) + 1) + 10 + 1,
+                  maxit = 500)
+
+# then can look at model
+nnetTune
+# predict etc etc
+```
+
+
+## MARS
+
+* several packages that do this, earth is the most extensive
+
+```{r, cache=TRUE}
+# Mars model using nominal forward pass and pruning step
+marsFit <- earth(solTrainXtrans, solTrainY)
+marsFit
+
+# generate more extensive output. Note that algorithm uses
+# GCV for model selection
+summary(marsFit)
+
+# the h() terms are hinge function
+# plotmo() function in earth can be used to create plots of transformed functions
+# vs the outcome
+
+# to tune (remember that MARS is quite resistant, tranforming and filtering not needed)
+# to work out nprune, fit without tuning first (above) and see how many terms the 
+# model selects. then prune from 2: this number
+marsGrid <- expand.grid(.degree = 1:2, .nprune = 2:38)
+
+set.seed(100)
+marsTune <- train(solTrainXtrans, solTrainY,
+                  method = "earth",
+                  tuneGrid = marsGrid,
+                  trControl = ctrl)
+marsTune
+head(predict(marsTune, solTestXtrans))
+
+varImp(marsTune)
+plot(varImp(marsTune))
+```
+
+## Support Vector Machines
+
+* extensive implementation is in the kernlab package. The ksvm() function is available for regression models, and has a large number of kernel functiosn. Radial basis is default kernel function. With appropriate values of cost and kernel parameters, the model can be fit as:
+
+```{r, cache=TRUE}
+# this will use the analytical approach to estimate sigma
+# as y is a numerical vector, the function knows to fit a 
+# regression model
+#svmFit <- ksvm(x = solTrainXtrans, y = solTrainY,
+#               kernel = "rbfdot",
+#               kpar = "automatic",
+#               C = 1,
+#               epsilon = 0.1)
+
+# other kernels can be used, including polynomial ("polydot"), linear ("vanilladot")
+
+# if values are unknown, estimate through resampling
+# center and scale so that support vectors are on the same scale
+# method supports "svmRadial", "svmPoly", "svmLinear"
+# presumabliy specify epsilon? what is default?
+svmRTune <- train(solTrainXtrans, solTrainY,
+                  method = "svmRadial",
+                  preProc = c("center", "scale"),
+                  tuneLength = 14,
+                  trControl = ctrl)
+
+# tuneLength uses default grid search of 14 cost values between 2^-2 and 2^11
+# sigma is estimated analytically by defauls
+
+svmRTune
+svmRTune$finalModel
+
+# see the number of support vectors is 625 (~66% of the training set data points)
+```
+
+## K-Nearest Neighbors
+
+* the knnreg() function in caret fits the KNN regression model, train() is used to tune over K
+
+```{r}
+# remove sparse and unbalanced fnigerprints in data set
+knnDescr <- solTrainXtrans[, -nearZeroVar(solTrainXtrans)]
+set.seed(100)
+knnTune <- train(knnDescr, solTrainY,
+                 method = "knn",
+                 # center and scaling will occur for new predictors too
+                 preProc = c("center", "scale"),
+                 tuneGrid = data.frame(.k = 1:20),
+                 trControl = ctrl)
+
+knnTune
+# when predicting new samples with this object, new samples are automatically
+# centered and scaled by the training set. I wonder if this is general for all methods?
+
+```

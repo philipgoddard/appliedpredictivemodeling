@@ -16,6 +16,8 @@ meltedGlass <- melt(Glass, id.vars = 'Type')
 
 densityplot(~value | variable,
             data= meltedGlass,
+            # can seperate groups by type if like!
+            # groups = Type,
             # adjust axis so measure scale different for each panel
             scales = list(x = list(relation = 'free'),
                           y = list(relation = 'free')),
@@ -31,7 +33,8 @@ colNames <- names(Glass)[1:9]
 j <-1
 plotList <- list()
 for(i in colNames){
-  plt <- ggplot(Glass, aes_string(x=i)) + geom_density() + geom_rug()
+  # remove aes(color = Type) from geom_density if desire
+  plt <- ggplot(Glass, aes_string(x=i)) + geom_density(aes(color = Type)) + geom_rug() + theme_bw()
   assign(paste("plot", j, sep = ""), plt)   
   j <- j+1
   plotList[[i]] <- plt
@@ -39,7 +42,7 @@ for(i in colNames){
 multiplotList(plotList[1:9],cols=3)
 
 # make scatterplot matrix using lattice
-splom(~Glass[, 1:9], pch = 16, cex = 0.7 )
+splom(~ Glass[, 1:9], pch = 16, cex = 0.7 )
 
 # or, if not too familier with lattice use a scatterplotMatrix 
 scatterplotMatrix(Glass[, 1:9], diagonal='none', smoother='none', reg.line='none')

@@ -1,0 +1,9 @@
+base
+AppliedPredictiveModeling
+lattice
+ggplot2
+caret
+MASS
+pls
+lars
+elasticnet

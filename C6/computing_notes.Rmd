@@ -1,0 +1,235 @@
+---
+title: "Linear Regression and Cousins"
+output: html_document
+---
+
+
+```{r}
+library(AppliedPredictiveModeling); library(caret); library(MASS); library(pls); library(elasticnet)
+data(solubility)
+## The data objects begin with "sol"
+ls(pattern = "^solT")
+```
+
+* Each column corresponds to a predictor, rows correspond to compounds. There are 228 columns in data
+
+```{r}
+set.seed(2)
+sample(names(solTrainX), 8)
+summary(solTrainX[names(sample((solTrainX), 8))])
+```
+
+* FP columns correpond to binary 0/1 fingerprints.
+
+* Alterantive versions of data are contained in solTrainXtrans and solTrainXtest; the continuous predictors have been transformed with box-cox.
+
+* solubility values are in solTrainY and solTestY
+
+### Ordinary Linear Regression
+
+```{r}
+# make a data frame with predictors and outcome
+trainingData <- solTrainXtrans
+trainingData$Solubility <- solTrainY
+
+# simple to fit (without caret)
+lmFitAllPredictors <- lm(Solubility ~ ., data = trainingData)
+summary(lmFitAllPredictors)
+
+# note there has been no cross validation - RMSE and R^2 are likely optimistically high
+
+# predict
+lmPred1 <- predict(lmFitAllPredictors, solTestXtrans)
+head(lmPred1)
+
+# collect the observed and predicted values, use caret defaultSummary()
+lmValues1 <- data.frame(obs = solTestY, pred = lmPred1)
+defaultSummary(lmValues1)
+```
+
+* based on the test set, the summaries produced by the summary function for lm() were optimistic.
+
+* if wasnt a robust linear model, use rlm() from MASS package, which by degault employs the Huber approach
+
+```{r}
+rlmFitAllPredictors <- rlm(Solubility ~ ., data = trainingData)
+```
+
+* caret train() function can be used. 10-fold cross validatio should be reasonable, as not small training set. trainControl() specifies resampling
+
+```{r}
+ctrl <- trainControl(method = "cv", number = 10)
+
+# use train to fit
+set.seed(100)
+lmFit1 <- train(x = solTrainXtrans, y = solTrainY,
+                method = "lm", trControl = ctrl)
+
+lmFit1
+```
+
+* For models built to explain (rather than predict), it is important to check model assumptions such as residual distribution. For predictive models, some of the same diagnostic techniques can shed light on whether the model is predicting well
+
+```{r}
+xyplot(solTrainY ~ predict(lmFit1),
+       type = c("p", "g"),
+       xlab = "Predicted", ylab = "Observed")
+xyplot(resid(lmFit1) ~ predict(lmFit1),
+       type = c("p", "g"),
+       xlab = "Predicted", ylab = "Residuals")
+```
+
+* To build a smaller model without exteremly high predictors:
+
+```{r}
+corThresh <- 0.9
+tooHigh <- findCorrelation(cor(solTrainXtrans), corThresh)
+corrPred <- names(solTrainXtrans)[tooHigh]
+trainXFiltered <- solTrainXtrans[, -tooHigh]
+testXFiltered <- solTestXtrans[, -tooHigh]
+ncol(testXFiltered)
+
+# fit
+set.seed(100)
+lmFiltered <- train(trainXFiltered, solTrainY, method = "lm",
+                    trControl = ctrl)
+lmFiltered
+```
+
+* robust linear regression can be performed using train function via rlm()
+
+* rlm does not allow predictors to be singular (unlike lm())
+
+* to ensure predictors are not singular, pre process with PCA
+
+```{r}
+set.seed(100)
+rlmPCA <- train(trainXFiltered, solTrainY,
+                method = "rlm",
+                preProcess = "pca",
+                trControl = ctrl)
+rlmPCA
+# check - does pca option center and scale first? YES
+```
+
+```{r}
+#xyplot(solTrainY ~ predict(rlmPCA),
+#       type = c("p", "g"),
+#       xlab = "Predicted", ylab = "Observed")
+#xyplot(resid(lmFit1) ~ predict(rlmPCA),
+#       type = c("p", "g"),
+#       xlab = "Predicted", ylab = "Residuals")
+```
+
+### PLS
+
+* pls package can be used. Contains several algorithms, use method = "pls", "oscorespls", "simpls" or "widekernelpls" for caret train() function
+
+* if want to use by itseld, use plsr()
+
+```{r}
+plsFit <- plsr(Solubility ~ ., data = trainingData)
+
+# predictions can be made for a specific number of components, or several values at one tim
+predict(plsFit, solTestXtrans[1:5, ], ncomp = 1:2)
+```
+
+* plsr() has options for k-fold or loocv, and which algorithm to use
+
+* may be easier just to use caret train()
+
+```{r}
+set.seed(100)
+plsTune <- train(solTrainXtrans, solTrainY,
+                 method = "pls",
+                 # default grid evaluates components
+                 # 1... tuneLength
+                 tuneLength = 20,
+                 trControl = ctrl,
+                 preProc = c("center", "scale"))
+plsTune
+# can plot eg ncomponents vs rmse for instructive plots
+xyplot(plsTune$results$RMSE ~ plsTune$results$ncomp,
+       xlab = "# Components",
+       ylab = "RMSE (Cross-Validation)",
+       type = c("o", "g"))
+```
+
+### Penalised Regression Methods
+
+* ridge regression models can be create using lm.ridge() function in MASS packae or the enet() function in elasticnet package
+* when call enet(), lambda sepcifies the the ridge-regression penalty
+
+```{r}
+ridgeModel <- enet(x = as.matrix(solTrainXtrans), y = solTrainY,
+                   lambda = 0.001)
+```
+
+* remember that the elastic net has both ridge and lasso penalties, ridge has only ridge penalty
+
+* predict() function for enet onjects generate values for one or more penalty simultaniously
+
+```{r}
+# s = 1 argument and mode = "fraction" lets us specify how the amount of penalization
+# # is defined, eg a value of 1 corresponds to a fraction of 1 - the full solution
+# predictor data must be a matrix
+ridgePred <- predict(ridgeModel, newx = as.matrix(solTestXtrans),
+                     s = 1, mode = "fraction", type = "fit")
+head(ridgePred$fit)
+```
+
+* to tune over penalty, use the caret train() method
+
+```{r, cache=TRUE}
+ridgeGrid <- data.frame(.lambda = seq(0, 0.1, length=15))
+set.seed(100)
+ridgeRegFit <- train(solTrainXtrans, solTrainY,
+                     method = "ridge",
+                     # fit model over many penalty values 
+                     tuneGrid = ridgeGrid,
+                     trControl = ctrl,
+                     # put predictors on the same scale
+                     preProc = c("center", "scale"))
+ridgeRegFit
+```
+
+* lasso model can be estimated using a number of different functions- lars package contains lars() function, elasticnet has enet() and glmnet has enet(). syntax for these functions is very similar
+
+```{r, cache=TRUE}
+# predictor must be a matrix
+# predictors should be centered and scaled prior to modelling
+# normalize argument handles this automitically
+# setting lambda to 0 fits the lasso model (it is the ridge penalty)
+# lasso penalty does not need to be sepcified until time of prediction
+enetModel <- enet(x = as.matrix(solTrainXtrans), y = solTrainY,
+                   lambda = 0.01, normalize = TRUE)
+
+enetPred <- predict(enetModel, newx = as.matrix(solTestXtrans),
+                    s = 0.1, mode = "fraction",
+                    type ="fit")
+names(enetPred)
+# predicted valued held in fit component of object
+head(enetPred$fit)
+
+# to determine which coefficients used in model, predict method used
+# with type = "coefficients"
+enetCoef <- predict(enetModel, newx = as.matrix(solTestXtrans),
+                    s = 0.1, mode = "fraction",
+                    type = "coefficients")
+tail(enetCoef$coefficients)
+```
+
+* as before, we can use caret train() to investigate multiple values of s 
+
+```{r, cache=TRUE}
+enetGrid <- expand.grid(.lambda = c(0, 0.01, 0.1),
+                         .fraction = seq(0.05, 1, length = 20))
+set.seed(100)
+enetTune <- train(solTrainXtrans, solTrainY,
+                  method = "enet",
+                  tuneGrid = enetGrid,
+                  trControl = ctrl,
+                  preProc = c("center", "scale"))
+plot(enetTune)
+
+```
